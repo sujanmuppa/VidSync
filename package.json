@@ -1,0 +1,15 @@
+{
+  "name": "vidsync",
+  "version": "1.0.0",
+  "description": "🎯 Goal: Build a web app where users upload the same local video file and sync playback actions (play, pause, seek) via WebSocket.\r ## Features\r - Upload and play local video files directly in the browser.\r - Sync playback actions (play, pause, seek) across multiple users in real-time using WebSocket.\r - Create or join watch party rooms with unique IDs.\r - Ensure all participants use the same video file with optional file hash verification.\r - Real-time updates for playback state and video position.\r - Optional features like chat, host controls, and reconnect handling.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "ws": "^8.18.1"
+  }
+}

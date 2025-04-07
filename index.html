@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>VidSync</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/css/bootstrap.min.css" rel="stylesheet">
+  <style>
+    .resizable-wrapper {
+      resize: both;
+      overflow: auto;
+      max-width: 100%;
+      max-height: 90vh;
+      min-width: 300px;
+      min-height: 200px;
+      margin: 0 auto 10px auto;
+      border: 2px dashed #007bff;
+      padding: 4px;
+      background: #fff;
+    }
+    .progress-container {
+      width: 100%;
+      height: 10px;
+      background-color: #ddd;
+      cursor: pointer;
+      position: relative;
+      border-radius: 5px;
+    }
+    .progress-bar {
+      height: 100%;
+      background-color: #007bff;
+      width: 0%;
+      border-radius: 5px;
+    }
+  </style>
+</head>
+<body class="bg-light">
+
+<div class="container mt-5">
+  <h1 class="text-center mb-4">📼 VidSync</h1>
+  <div class="mb-3 text-center">
+    <input type="file" id="videoFile" accept="video/*" class="form-control w-50 mx-auto">
+  </div>
+
+  <div class="resizable-wrapper">
+    <video id="video" style="width: 100%; height: 100%;"></video>
+  </div>
+
+  <div class="progress-container" id="progressContainer">
+    <div class="progress-bar" id="progressBar"></div>
+  </div>
+
+  <p class="text-center mt-2" id="timeDisplay">00:00 / 00:00</p>
+  <p class="text-center mt-2" id="fileNameDisplay"></p>
+
+  <div class="d-flex justify-content-center mt-3">
+    <button class="btn btn-primary mx-2" onclick="handlePlay()">Play</button>
+    <button class="btn btn-secondary mx-2" onclick="handlePause()">Pause</button>
+    <button class="btn btn-success mx-2" onclick="handleSeek(10)">+10s</button>
+    <button class="btn btn-danger mx-2" onclick="handleSeek(-10)">-10s</button>
+  </div>
+</div>
+
+<script>
+  const video = document.getElementById('video');
+  const input = document.getElementById('videoFile');
+  const fileNameDisplay = document.getElementById('fileNameDisplay');
+  const timeDisplay = document.getElementById('timeDisplay');
+  const progressContainer = document.getElementById('progressContainer');
+  const progressBar = document.getElementById('progressBar');
+
+  let fileHash = null;
+  let ws;
+  let isRemoteChange = false;
+
+  function setupSocket() {
+    ws = new WebSocket("ws://localhost:3000");
+
+    ws.onopen = () => {
+      console.log("✅ WebSocket connected");
+      ws.send(JSON.stringify({
+        type: "ready",
+        hash: fileHash,
+        currentTime: video.currentTime,
+        paused: video.paused
+      }));
+    };
+
+    ws.onclose = () => console.log("❌ WebSocket disconnected");
+
+    ws.onmessage = (message) => {
+      const msg = JSON.parse(message.data);
+      if (msg.hash !== fileHash) return;
+
+      isRemoteChange = true;
+
+      switch (msg.type) {
+        case 'play':
+          video.play().catch(() => {});
+          break;
+        case 'pause':
+          video.pause();
+          break;
+        case 'seek':
+          video.currentTime = msg.data;
+          break;
+        case 'sync':
+          if (msg.currentTime != null) {
+            video.currentTime = msg.currentTime;
+            if (!msg.paused) {
+              video.play().catch(() => {});
+            }
+          }
+          break;
+        case 'sync-check':
+          const diff = Math.abs(video.currentTime - msg.currentTime);
+          if (diff > 1) {
+            video.currentTime = msg.currentTime;
+          }
+          break;
+      }
+
+      setTimeout(() => {
+        isRemoteChange = false;
+      }, 100);
+    };
+
+    // 🕓 Periodic sync checker every 5 seconds
+    setInterval(() => {
+      if (
+        ws?.readyState === WebSocket.OPEN &&
+        fileHash &&
+        !video.paused &&
+        !isRemoteChange
+      ) {
+        ws.send(JSON.stringify({
+          type: 'sync-check',
+          hash: fileHash,
+          currentTime: video.currentTime
+        }));
+      }
+    }, 5000);
+  }
+
+  function emitSync(type, data = null) {
+    if (ws?.readyState === WebSocket.OPEN && fileHash) {
+      ws.send(JSON.stringify({ type, data, hash: fileHash }));
+    }
+  }
+
+  input.addEventListener('change', (event) => {
+    const file = event.target.files[0];
+    if (file) {
+      const url = URL.createObjectURL(file);
+      video.src = url;
+
+      fileNameDisplay.textContent = `🎬 File: ${file.name}`;
+
+      const reader = new FileReader();
+      reader.onload = async function () {
+        const hash = await generateSHA256(reader.result);
+        fileHash = hash;
+        fileNameDisplay.textContent += ` | 🔑 Hash: ${hash.substring(0, 12)}...`;
+        setupSocket(); // connect WebSocket
+      };
+      reader.readAsArrayBuffer(file);
+    }
+  });
+
+  async function generateSHA256(buffer) {
+    const hashBuffer = await crypto.subtle.digest('SHA-256', buffer);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+  }
+
+  video.addEventListener('timeupdate', () => {
+    const current = formatTime(video.currentTime);
+    const duration = formatTime(video.duration || 0);
+    timeDisplay.textContent = `${current} / ${duration}`;
+
+    const percent = (video.currentTime / video.duration) * 100;
+    progressBar.style.width = `${percent}%`;
+  });
+
+  progressContainer.addEventListener('click', (e) => {
+    const rect = progressContainer.getBoundingClientRect();
+    const offsetX = e.clientX - rect.left;
+    const percent = offsetX / rect.width;
+    const newTime = percent * video.duration;
+    video.currentTime = newTime;
+    if (!isRemoteChange) {
+      emitSync("seek", newTime);
+    }
+  });
+
+  function formatTime(seconds) {
+    const m = Math.floor(seconds / 60).toString().padStart(2, '0');
+    const s = Math.floor(seconds % 60).toString().padStart(2, '0');
+    return `${m}:${s}`;
+  }
+
+  function handlePlay() {
+    video.play();
+    if (!isRemoteChange) emitSync("play");
+  }
+
+  function handlePause() {
+    video.pause();
+    if (!isRemoteChange) emitSync("pause");
+  }
+
+  function handleSeek(seconds) {
+    video.currentTime += seconds;
+    if (!isRemoteChange) emitSync("seek", video.currentTime);
+  }
+
+  function handleReset() {
+    video.currentTime = 0;
+    if (!isRemoteChange) emitSync("seek", 0);
+  }
+
+  document.addEventListener('keydown', (event) => {
+    const key = event.key.toLowerCase();
+    if ([' ', 'arrowright', 'arrowleft'].includes(event.key)) event.preventDefault();
+
+    switch (key) {
+      case ' ':
+      case 'p': video.paused ? handlePlay() : handlePause(); break;
+      case 'd':
+      case 'arrowright': handleSeek(10); break;
+      case 'a':
+      case 'arrowleft': handleSeek(-10); break;
+      case 'r': handleReset(); break;
+    }
+  });
+</script>
+
+</body>
+</html>
